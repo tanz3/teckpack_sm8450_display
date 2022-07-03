@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -31,6 +32,16 @@
 #define DSI_CMD_PPS_HDR_SIZE 7
 #define DSI_MODE_MAX 32
 
+#define DSI_IS_FSC_PANEL(fsc_rgb_order) \
+		(((!strcmp(fsc_rgb_order, "fsc_rgb")) || \
+		(!strcmp(fsc_rgb_order, "fsc_rbg")) || \
+		(!strcmp(fsc_rgb_order, "fsc_bgr")) || \
+		(!strcmp(fsc_rgb_order, "fsc_brg")) || \
+		(!strcmp(fsc_rgb_order, "fsc_gbr")) || \
+		(!strcmp(fsc_rgb_order, "fsc_grb"))))
+
+#define FSC_MODE_LABEL_SIZE	8
+
 /*
  * Defining custom dsi msg flag.
  * Using upper byte of flag field for custom DSI flags.
@@ -53,6 +64,7 @@ enum dsi_backlight_type {
 	DSI_BACKLIGHT_WLED,
 	DSI_BACKLIGHT_DCS,
 	DSI_BACKLIGHT_EXTERNAL,
+	DSI_BACKLIGHT_I2C,
 	DSI_BACKLIGHT_UNKNOWN,
 	DSI_BACKLIGHT_MAX,
 };
@@ -215,6 +227,8 @@ struct dsi_panel {
 	const char *type;
 	struct device_node *panel_of_node;
 	struct mipi_dsi_device mipi_device;
+	struct device_node *rgb_left_led_node;
+	struct device_node *rgb_right_led_node;
 
 	struct mutex panel_lock;
 	struct drm_panel drm_panel;
@@ -236,6 +250,8 @@ struct dsi_panel {
 	struct dsi_display_mode *cur_mode;
 	u32 num_timing_nodes;
 	u32 num_display_modes;
+
+	char fsc_rgb_order[FSC_MODE_LABEL_SIZE];
 
 	struct dsi_regulator_info power_info;
 	struct dsi_backlight_config bl_config;

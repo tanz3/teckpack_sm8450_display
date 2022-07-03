@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -10,6 +10,7 @@
 #include <linux/of_gpio.h>
 #include <linux/pwm.h>
 #include <video/mipi_display.h>
+#include <misc/isl97900_led.h>
 
 #include "dsi_panel.h"
 #include "dsi_ctrl_hw.h"
@@ -651,6 +652,15 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	case DSI_BACKLIGHT_PWM:
 		rc = dsi_panel_update_pwm_backlight(panel, bl_lvl);
 		break;
+	case DSI_BACKLIGHT_I2C:
+		if (panel->rgb_left_led_node)
+			isl97900_led_event(panel->rgb_left_led_node,
+					0, bl_lvl);
+
+		if (panel->rgb_right_led_node)
+			isl97900_led_event(panel->rgb_right_led_node,
+					0, bl_lvl);
+		break;
 	default:
 		DSI_ERR("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
@@ -676,6 +686,7 @@ static u32 dsi_panel_get_brightness(struct dsi_backlight_config *bl)
 	case DSI_BACKLIGHT_DCS:
 	case DSI_BACKLIGHT_EXTERNAL:
 	case DSI_BACKLIGHT_PWM:
+	case DSI_BACKLIGHT_I2C:
 	default:
 		/*
 		 * Ideally, we should read the backlight level from the
@@ -719,6 +730,48 @@ static int dsi_panel_pwm_register(struct dsi_panel *panel)
 	return 0;
 }
 
+static int dsi_panel_parse_fsc_rgb_order(struct dsi_panel *panel,
+		struct dsi_parser_utils *utils)
+{
+	int rc = 0;
+	const char *fsc_rgb_order;
+
+	fsc_rgb_order = utils->get_property(utils->data,
+		"qcom,dsi-panel-fsc-rgb-order", NULL);
+	if (fsc_rgb_order) {
+		if (DSI_IS_FSC_PANEL(fsc_rgb_order)) {
+			strlcpy(panel->fsc_rgb_order, fsc_rgb_order,
+				sizeof(panel->fsc_rgb_order));
+		} else {
+			DSI_ERR("Unrecognized fsc color order-%s\n",
+				fsc_rgb_order);
+			rc = -EINVAL;
+		}
+	}
+
+	return rc;
+}
+
+static int dsi_panel_parse_rgb_led(struct dsi_panel *panel,
+		struct device_node *of_node)
+{
+	int rc = 0;
+
+	if (!panel || !of_node)
+		return -EINVAL;
+
+	if (panel->bl_config.type != DSI_BACKLIGHT_I2C)
+		return 0;
+
+	panel->rgb_left_led_node = of_parse_phandle(of_node,
+		"qcom,panel-rgb-left-led", 0);
+
+	panel->rgb_right_led_node = of_parse_phandle(of_node,
+		"qcom,panel-rgb-right-led", 0);
+
+	return rc;
+}
+
 static int dsi_panel_bl_register(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -737,6 +790,8 @@ static int dsi_panel_bl_register(struct dsi_panel *panel)
 		break;
 	case DSI_BACKLIGHT_PWM:
 		rc = dsi_panel_pwm_register(panel);
+		break;
+	case DSI_BACKLIGHT_I2C:
 		break;
 	default:
 		DSI_ERR("Backlight type(%d) not supported\n", bl->type);
@@ -772,6 +827,8 @@ static int dsi_panel_bl_unregister(struct dsi_panel *panel)
 		break;
 	case DSI_BACKLIGHT_PWM:
 		dsi_panel_pwm_unregister(panel);
+		break;
+	case DSI_BACKLIGHT_I2C:
 		break;
 	default:
 		DSI_ERR("Backlight type(%d) not supported\n", bl->type);
@@ -955,6 +1012,15 @@ static int dsi_panel_parse_pixel_format(struct dsi_host_common_cfg *host,
 		fmt = DSI_PIXEL_FORMAT_RGB666;
 		break;
 	case 30:
+		/*
+		 * The destination pixel format (host->dst_format) depends
+		 * upon the compression, and should be RGB888 if the DSC is
+		 * enable.
+		 * The DSC status information is inside the timing modes, that
+		 * is parsed during first dsi_display_get_modes() call.
+		 * The dst_format will be updated there depending upon the
+		 * DSC status.
+		 */
 		fmt = DSI_PIXEL_FORMAT_RGB101010;
 		break;
 	case 24:
@@ -2432,6 +2498,8 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 		panel->bl_config.type = DSI_BACKLIGHT_DCS;
 	} else if (!strcmp(bl_type, "bl_ctrl_external")) {
 		panel->bl_config.type = DSI_BACKLIGHT_EXTERNAL;
+	} else if (!strcmp(bl_type, "bl_ctrl_i2c")) {
+		panel->bl_config.type = DSI_BACKLIGHT_I2C;
 	} else {
 		DSI_DEBUG("[%s] bl-pmic-control-type unknown-%s\n",
 			 panel->name, bl_type);
@@ -3439,6 +3507,8 @@ static int dsi_panel_parse_esd_config(struct dsi_panel *panel)
 				rc = -EINVAL;
 				goto error;
 			}
+		} else if (!strcmp(string, "esd_sw_sim_success")) {
+			esd_config->status_mode = ESD_MODE_SW_SIM_SUCCESS;
 		} else {
 			DSI_ERR("No valid panel-status-check-mode string\n");
 			rc = -EINVAL;
@@ -3636,6 +3706,14 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	rc = dsi_panel_parse_esd_config(panel);
 	if (rc)
 		DSI_DEBUG("failed to parse esd config, rc=%d\n", rc);
+
+	rc = dsi_panel_parse_fsc_rgb_order(panel, utils);
+	if (rc)
+		DSI_DEBUG("failed to read fsc color order, rc=%d\n", rc);
+
+	rc = dsi_panel_parse_rgb_led(panel, of_node);
+	if (rc)
+		DSI_DEBUG("failed to get rgb led info, rc=%d\n", rc);
 
 	rc = dsi_panel_vreg_get(panel);
 	if (rc) {
@@ -3949,8 +4027,8 @@ void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 	struct dsi_mode_info *timing = &mode->timing;
 	struct dsi_display_mode *display_mode;
 	u32 jitter_numer, jitter_denom, prefill_lines;
-	u32 default_prefill_lines, actual_prefill_lines;
 	u32 min_threshold_us, prefill_time_us, max_transfer_us, packet_overhead;
+	u32 bits_per_symbol = 16, num_of_symbols = 7; /* For Cphy */
 	u16 bpp;
 
 	/* Packet overhead in bits,
@@ -3996,6 +4074,11 @@ void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 
 	timing->min_dsi_clk_hz = min_bitclk_hz;
 
+	if (config->phy_type == DSI_PHY_TYPE_CPHY) {
+		do_div(timing->min_dsi_clk_hz, bits_per_symbol);
+		timing->min_dsi_clk_hz *= num_of_symbols;
+	}
+
 	/*
 	 * Apart from prefill line time, we need to take into account RSCC mode threshold time. In
 	 * cases where RSC is disabled, as jitter is no longer considered we need to make sure we
@@ -4013,12 +4096,8 @@ void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 	 * Increase the prefill_lines proportionately as recommended
 	 * 40lines for 60fps, 60 for 90fps, 120lines for 120fps, and so on.
 	 */
-	default_prefill_lines = mult_frac(MIN_PREFILL_LINES, timing->refresh_rate, 60);
-
-	actual_prefill_lines = timing->v_back_porch + timing->v_front_porch + timing->v_sync_width;
-
-	/* consider the max of default prefill lines and actual prefill lines */
-	prefill_lines = max(actual_prefill_lines, default_prefill_lines);
+	prefill_lines = mult_frac(MIN_PREFILL_LINES,
+			timing->refresh_rate, 60);
 
 	prefill_time_us = mult_frac(frame_time_us, prefill_lines,
 			(timing->v_active));
@@ -4140,6 +4219,7 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 			DSI_ERR("failed to parse panel timing, rc=%d\n", rc);
 			goto parse_fail;
 		}
+		mode->timing.fsc_mode = DSI_IS_FSC_PANEL(panel->fsc_rgb_order);
 
 		if (panel->dyn_clk_caps.dyn_clk_support) {
 			rc = dsi_panel_parse_dyn_clk_list(mode, utils);

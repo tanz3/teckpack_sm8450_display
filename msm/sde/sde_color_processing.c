@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -1649,6 +1650,7 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 	int i = 0, ret = 0;
 	bool feature_enabled = false;
 	struct sde_mdss_cfg *catalog = NULL;
+	struct sde_crtc_state *sde_crtc_state;
 
 	memset(&hw_cfg, 0, sizeof(hw_cfg));
 	_sde_cp_get_cached_payload(prop_node, &hw_cfg, &feature_enabled);
@@ -1660,6 +1662,13 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 	hw_cfg.skip_blend_plane = sde_crtc->skip_blend_plane;
 	hw_cfg.skip_blend_plane_h = sde_crtc->skip_blend_plane_h;
 	hw_cfg.skip_blend_plane_w = sde_crtc->skip_blend_plane_w;
+
+	sde_crtc_state = to_sde_crtc_state(sde_crtc->base.state);
+	if (!sde_crtc_state) {
+		DRM_ERROR("invalid sde_crtc_state %pK\n", sde_crtc_state);
+		return;
+	}
+	hw_cfg.num_ds_enabled = sde_crtc_state->num_ds_enabled;
 
 	SDE_EVT32(hw_cfg.panel_width, hw_cfg.panel_height);
 
@@ -4865,7 +4874,7 @@ void sde_cp_crtc_enable(struct drm_crtc *drm_crtc)
 	if (!num_mixers)
 		return;
 	mutex_lock(&crtc->crtc_cp_lock);
-	info = kzalloc(sizeof(struct sde_kms_info), GFP_KERNEL);
+	info = vzalloc(sizeof(struct sde_kms_info));
 	if (info) {
 		for (i = 0; i < ARRAY_SIZE(dspp_cap_update_func); i++)
 			dspp_cap_update_func[i](crtc, info);
@@ -4874,7 +4883,7 @@ void sde_cp_crtc_enable(struct drm_crtc *drm_crtc)
 			info->data, SDE_KMS_INFO_DATALEN(info),
 			CRTC_PROP_DSPP_INFO);
 	}
-	kfree(info);
+	vfree(info);
 	mutex_unlock(&crtc->crtc_cp_lock);
 }
 
@@ -4889,7 +4898,7 @@ void sde_cp_crtc_disable(struct drm_crtc *drm_crtc)
 	}
 	crtc = to_sde_crtc(drm_crtc);
 	mutex_lock(&crtc->crtc_cp_lock);
-	info = kzalloc(sizeof(struct sde_kms_info), GFP_KERNEL);
+	info = vzalloc(sizeof(struct sde_kms_info));
 	if (info)
 		msm_property_set_blob(&crtc->property_info,
 				&crtc->dspp_blob_info,
@@ -4900,7 +4909,7 @@ void sde_cp_crtc_disable(struct drm_crtc *drm_crtc)
 	crtc->skip_blend_plane_h = 0;
 	crtc->skip_blend_plane_w = 0;
 	mutex_unlock(&crtc->crtc_cp_lock);
-	kfree(info);
+	vfree(info);
 }
 
 void sde_cp_clear_state_info(struct drm_crtc_state *state)
